@@ -10,7 +10,7 @@
 
 using namespace std;
 
-enum class Status {
+enum class JudgeStatus {
     Accepted,
     Wrong_Answer,
     Runtime_Error,
@@ -20,41 +20,41 @@ enum class Status {
 struct Submission {
     string problem_name;
     string team_name;
-    Status status;
+    JudgeStatus status;
     int time;
 };
 
-struct TeamProblem {
+struct ProblemStatus {
     bool solved = false;
     int first_solve_time = -1;
-    int wrong_attempts = 0;
-    int frozen_wrong_attempts = 0;
+    int wrong_attempts_before_ac = 0;
+    int frozen_attempts = 0;
     bool is_frozen = false;
-
-    int get_total_wrong_attempts() const {
-        return wrong_attempts + frozen_wrong_attempts;
-    }
 
     int get_penalty() const {
         if (!solved) return 0;
-        return 20 * wrong_attempts + first_solve_time;
+        return 20 * wrong_attempts_before_ac + first_solve_time;
+    }
+
+    int get_total_attempts() const {
+        return wrong_attempts_before_ac + frozen_attempts;
     }
 };
 
 struct Team {
     string name;
+    unordered_map<string, ProblemStatus> problems;
     int solved_count = 0;
     int total_penalty = 0;
     vector<int> solve_times;
-    unordered_map<string, TeamProblem> problems;
 
-    void update_stats(const vector<string>& problem_names) {
+    void calculate_stats(const vector<string>& problem_names) {
         solved_count = 0;
         total_penalty = 0;
         solve_times.clear();
 
-        for (const auto& problem_name : problem_names) {
-            const auto& problem = problems[problem_name];
+        for (const auto& pname : problem_names) {
+            const auto& problem = problems[pname];
             if (problem.solved && !problem.is_frozen) {
                 solved_count++;
                 total_penalty += problem.get_penalty();
@@ -83,88 +83,75 @@ struct Team {
 
 class ICPCSystem {
 private:
-    bool competition_started = false;
+    bool started = false;
     bool frozen = false;
-    int duration_time = 0;
+    int duration = 0;
     int problem_count = 0;
     vector<string> problem_names;
     unordered_map<string, Team> teams;
     vector<Submission> submissions;
     vector<Team*> ranking;
-    bool ranking_dirty = true;
+    bool needs_ranking_update = true;
 
 public:
     void add_team(const string& team_name) {
-        if (competition_started) {
+        if (started) {
             cout << "[Error]Add failed: competition has started.\n";
             return;
         }
-
-        if (teams.find(team_name) != teams.end()) {
+        if (teams.count(team_name)) {
             cout << "[Error]Add failed: duplicated team name.\n";
             return;
         }
-
         teams[team_name] = Team();
         teams[team_name].name = team_name;
         cout << "[Info]Add successfully.\n";
     }
 
-    void start_competition(int duration, int count) {
-        if (competition_started) {
+    void start_competition(int dur, int count) {
+        if (started) {
             cout << "[Error]Start failed: competition has started.\n";
             return;
         }
-
-        duration_time = duration;
+        duration = dur;
         problem_count = count;
-        competition_started = true;
-
-        // Generate problem names (A, B, C, ...)
+        started = true;
         for (int i = 0; i < count; i++) {
             problem_names.push_back(string(1, 'A' + i));
         }
-
         cout << "[Info]Competition starts.\n";
     }
 
-    void submit(const string& problem_name, const string& team_name,
+    void submit(const string& problem, const string& team,
                 const string& status_str, int time) {
-        Status status = Status::Wrong_Answer; // Default value
-        if (status_str == "Accepted") status = Status::Accepted;
-        else if (status_str == "Wrong_Answer") status = Status::Wrong_Answer;
-        else if (status_str == "Runtime_Error") status = Status::Runtime_Error;
-        else if (status_str == "Time_Limit_Exceed") status = Status::Time_Limit_Exceed;
+        JudgeStatus status = JudgeStatus::Wrong_Answer;
+        if (status_str == "Accepted") status = JudgeStatus::Accepted;
+        else if (status_str == "Wrong_Answer") status = JudgeStatus::Wrong_Answer;
+        else if (status_str == "Runtime_Error") status = JudgeStatus::Runtime_Error;
+        else if (status_str == "Time_Limit_Exceed") status = JudgeStatus::Time_Limit_Exceed;
 
-        submissions.push_back({problem_name, team_name, status, time});
+        submissions.push_back({problem, team, status, time});
 
-        Team& team = teams[team_name];
-        TeamProblem& problem = team.problems[problem_name];
+        Team& t = teams[team];
+        ProblemStatus& ps = t.problems[problem];
 
-        if (problem.solved) {
-            // Already solved, ignore subsequent submissions
-            return;
-        }
+        if (ps.solved) return; // Ignore submissions after solving
 
-        if (status == Status::Accepted) {
-            if (!problem.solved) {
-                problem.solved = true;
-                problem.first_solve_time = time;
-                if (!frozen) {
-                    team.update_stats(problem_names);
-                    ranking_dirty = true;
-                }
+        if (status == JudgeStatus::Accepted) {
+            ps.solved = true;
+            ps.first_solve_time = time;
+            if (!frozen) {
+                t.calculate_stats(problem_names);
+                needs_ranking_update = true;
             }
         } else {
-            if (frozen && !problem.solved) {
-                problem.frozen_wrong_attempts++;
-                problem.is_frozen = true;
+            if (frozen) {
+                ps.frozen_attempts++;
+                ps.is_frozen = true;
             } else {
-                problem.wrong_attempts++;
-                if (!frozen) {
-                    team.update_stats(problem_names);
-                    ranking_dirty = true;
-                }
+                ps.wrong_attempts_before_ac++;
+                t.calculate_stats(problem_names);
+                needs_ranking_update = true;
             }
         }
     }
@@ -179,7 +166,6 @@ public:
             cout << "[Error]Freeze failed: scoreboard has been frozen.\n";
             return;
         }
-
         frozen = true;
         cout << "[Info]Freeze scoreboard.\n";
     }
@@ -192,23 +178,23 @@ public:
 
         cout << "[Info]Scroll scoreboard.\n";
 
-        // Output scoreboard before scrolling
+        // Output initial scoreboard
         update_ranking();
-        output_scoreboard();
+        print_scoreboard();
 
-        // Perform scrolling
+        // Process scrolling
         while (true) {
-            // Find the lowest ranked team with frozen problems
+            // Find lowest ranked team with frozen problems
             Team* target_team = nullptr;
             string target_problem;
 
             for (int i = ranking.size() - 1; i >= 0; i--) {
                 Team* team = ranking[i];
-                for (const auto& problem_name : problem_names) {
-                    auto& problem = team->problems[problem_name];
+                for (const auto& pname : problem_names) {
+                    auto& problem = team->problems[pname];
                     if (problem.is_frozen) {
                         target_team = team;
-                        target_problem = problem_name;
+                        target_problem = pname;
                         break;
                     }
                 }
@@ -218,18 +204,18 @@ public:
             if (!target_team) break;
 
             // Unfreeze the problem
-            TeamProblem& problem = target_team->problems[target_problem];
+            ProblemStatus& problem = target_team->problems[target_problem];
             problem.is_frozen = false;
-            problem.wrong_attempts += problem.frozen_wrong_attempts;
-            problem.frozen_wrong_attempts = 0;
+            problem.wrong_attempts_before_ac += problem.frozen_attempts;
+            problem.frozen_attempts = 0;
 
             // Update team stats
-            target_team->update_stats(problem_names);
+            target_team->calculate_stats(problem_names);
 
             // Update ranking
             update_ranking();
 
-            // Find the team that was replaced
+            // Check if ranking changed
             int new_rank = -1;
             for (size_t i = 0; i < ranking.size(); i++) {
                 if (ranking[i] == target_team) {
@@ -238,7 +224,7 @@ public:
                 }
             }
 
-            // Output the ranking change if ranking improved
+            // Output ranking change if improved
             if (new_rank > 1) {
                 Team* replaced_team = ranking[new_rank - 2];
                 cout << target_team->name << " " << replaced_team->name << " "
@@ -249,11 +235,11 @@ public:
         frozen = false;
 
         // Output final scoreboard
-        output_scoreboard();
+        print_scoreboard();
     }
 
     void query_ranking(const string& team_name) {
-        if (teams.find(team_name) == teams.end()) {
+        if (!teams.count(team_name)) {
             cout << "[Error]Query ranking failed: cannot find the team.\n";
             return;
         }
@@ -264,45 +250,39 @@ public:
         }
 
         update_ranking();
-        int rank = 1;
-        for (const auto* team : ranking) {
-            if (team->name == team_name) {
-                cout << team_name << " NOW AT RANKING " << rank << "\n";
+        for (size_t i = 0; i < ranking.size(); i++) {
+            if (ranking[i]->name == team_name) {
+                cout << team_name << " NOW AT RANKING " << (i + 1) << "\n";
                 return;
             }
-            rank++;
         }
     }
 
     void query_submission(const string& team_name, const string& problem_filter,
                          const string& status_filter) {
-        if (teams.find(team_name) == teams.end()) {
+        if (!teams.count(team_name)) {
             cout << "[Error]Query submission failed: cannot find the team.\n";
             return;
         }
 
         cout << "[Info]Complete query submission.\n";
 
-        Submission* last_match = nullptr;
+        // Find last matching submission
         for (auto it = submissions.rbegin(); it != submissions.rend(); ++it) {
             if (it->team_name == team_name) {
-                bool problem_match = (problem_filter == "ALL") || (it->problem_name == problem_filter);
-                bool status_match = (status_filter == "ALL") ||
-                                  (status_to_string(it->status) == status_filter);
+                bool problem_ok = (problem_filter == "ALL") || (it->problem_name == problem_filter);
+                bool status_ok = (status_filter == "ALL") ||
+                               (status_to_string(it->status) == status_filter);
 
-                if (problem_match && status_match) {
-                    last_match = &(*it);
-                    break;
+                if (problem_ok && status_ok) {
+                    cout << it->team_name << " " << it->problem_name << " "
+                         << status_to_string(it->status) << " " << it->time << "\n";
+                    return;
                 }
             }
         }
 
-        if (!last_match) {
-            cout << "Cannot find any submission.\n";
-        } else {
-            cout << last_match->team_name << " " << last_match->problem_name << " "
-                 << status_to_string(last_match->status) << " " << last_match->time << "\n";
-        }
+        cout << "Cannot find any submission.\n";
     }
 
     void end_competition() {
@@ -311,7 +291,7 @@ public:
 
 private:
     void update_ranking() {
-        if (!ranking_dirty && !frozen) return;
+        if (!needs_ranking_update && !frozen) return;
 
         ranking.clear();
         for (auto& [name, team] : teams) {
@@ -322,36 +302,37 @@ private:
             return *a < *b;
         });
 
-        ranking_dirty = false;
+        needs_ranking_update = false;
     }
 
-    void output_scoreboard() {
+    void print_scoreboard() {
         for (size_t i = 0; i < ranking.size(); i++) {
             Team* team = ranking[i];
             cout << team->name << " " << (i + 1) << " " << team->solved_count
                  << " " << team->total_penalty;
 
-            for (const auto& problem_name : problem_names) {
-                const TeamProblem& problem = team->problems[problem_name];
+            for (const auto& pname : problem_names) {
+                const ProblemStatus& problem = team->problems[pname];
                 cout << " ";
 
                 if (problem.is_frozen) {
-                    if (problem.wrong_attempts == 0) {
-                        cout << "0/" << problem.frozen_wrong_attempts;
+                    if (problem.wrong_attempts_before_ac == 0) {
+                        cout << "0/" << problem.frozen_attempts;
                     } else {
-                        cout << "-" << problem.wrong_attempts << "/" << problem.frozen_wrong_attempts;
+                        cout << "-" << problem.wrong_attempts_before_ac << "/" << problem.frozen_attempts;
                     }
                 } else if (problem.solved) {
-                    if (problem.wrong_attempts == 0) {
+                    if (problem.wrong_attempts_before_ac == 0) {
                         cout << "+";
                     } else {
-                        cout << "+" << problem.wrong_attempts;
+                        cout << "+" << problem.wrong_attempts_before_ac;
                     }
                 } else {
-                    if (problem.wrong_attempts == 0 && problem.frozen_wrong_attempts == 0) {
+                    int total = problem.get_total_attempts();
+                    if (total == 0) {
                         cout << ".";
                     } else {
-                        cout << "-" << problem.get_total_wrong_attempts();
+                        cout << "-" << total;
                     }
                 }
             }
@@ -359,12 +340,12 @@ private:
         }
     }
 
-    string status_to_string(Status status) {
+    string status_to_string(JudgeStatus status) {
         switch (status) {
-            case Status::Accepted: return "Accepted";
-            case Status::Wrong_Answer: return "Wrong_Answer";
-            case Status::Runtime_Error: return "Runtime_Error";
-            case Status::Time_Limit_Exceed: return "Time_Limit_Exceed";
+            case JudgeStatus::Accepted: return "Accepted";
+            case JudgeStatus::Wrong_Answer: return "Wrong_Answer";
+            case JudgeStatus::Runtime_Error: return "Runtime_Error";
+            case JudgeStatus::Time_Limit_Exceed: return "Time_Limit_Exceed";
         }
         return "";
     }
@@ -378,55 +359,55 @@ int main() {
         if (line.empty()) continue;
 
         istringstream iss(line);
-        string command;
-        iss >> command;
+        string cmd;
+        iss >> cmd;
 
-        if (command == "ADDTEAM") {
-            string team_name;
-            iss >> team_name;
-            system.add_team(team_name);
+        if (cmd == "ADDTEAM") {
+            string team;
+            iss >> team;
+            system.add_team(team);
         }
-        else if (command == "START") {
+        else if (cmd == "START") {
             string dummy;
-            int duration, count;
-            iss >> dummy >> duration >> dummy >> count;
-            system.start_competition(duration, count);
+            int dur, count;
+            iss >> dummy >> dur >> dummy >> count;
+            system.start_competition(dur, count);
         }
-        else if (command == "SUBMIT") {
-            string problem_name, by, team_name, with, status_str, at;
+        else if (cmd == "SUBMIT") {
+            string problem, by, team, with, status, at;
             int time;
-            iss >> problem_name >> by >> team_name >> with >> status_str >> at >> time;
-            system.submit(problem_name, team_name, status_str, time);
+            iss >> problem >> by >> team >> with >> status >> at >> time;
+            system.submit(problem, team, status, time);
         }
-        else if (command == "FLUSH") {
+        else if (cmd == "FLUSH") {
             system.flush();
         }
-        else if (command == "FREEZE") {
+        else if (cmd == "FREEZE") {
             system.freeze();
         }
-        else if (command == "SCROLL") {
+        else if (cmd == "SCROLL") {
             system.scroll();
         }
-        else if (command == "QUERY_RANKING") {
-            string team_name;
-            iss >> team_name;
-            system.query_ranking(team_name);
+        else if (cmd == "QUERY_RANKING") {
+            string team;
+            iss >> team;
+            system.query_ranking(team);
         }
-        else if (command == "QUERY_SUBMISSION") {
-            string team_name, where, problem_equals, problem_filter, and_str, status_equals, status_filter;
-            iss >> team_name >> where >> problem_equals >> problem_filter >> and_str >> status_equals >> status_filter;
+        else if (cmd == "QUERY_SUBMISSION") {
+            string team, where, prob_eq, prob_filter, and_str, stat_eq, stat_filter;
+            iss >> team >> where >> prob_eq >> prob_filter >> and_str >> stat_eq >> stat_filter;
 
-            // Remove "PROBLEM=" and "STATUS=" prefixes
-            if (problem_equals.find("PROBLEM=") == 0) {
-                problem_filter = problem_equals.substr(8);
+            // Parse problem and status filters
+            if (prob_eq.find("PROBLEM=") == 0) {
+                prob_filter = prob_eq.substr(8);
             }
-            if (status_equals.find("STATUS=") == 0) {
-                status_filter = status_equals.substr(7);
+            if (stat_eq.find("STATUS=") == 0) {
+                stat_filter = stat_eq.substr(7);
             }
 
-            system.query_submission(team_name, problem_filter, status_filter);
+            system.query_submission(team, prob_filter, stat_filter);
         }
-        else if (command == "END") {
+        else if (cmd == "END") {
             system.end_competition();
             break;
         }
