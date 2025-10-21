@@ -7,6 +7,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <functional>
+#include <memory>
 
 using namespace std;
 
@@ -46,15 +47,17 @@ struct Team {
     int solved_count = 0;
     int total_penalty = 0;
     vector<int> solve_times;
-    map<string, TeamProblem> problems;
+    unordered_map<string, TeamProblem> problems;
+    int rank = 0;
 
-    void update_stats() {
+    void update_stats(const vector<string>& problem_names, bool include_frozen = false) {
         solved_count = 0;
         total_penalty = 0;
         solve_times.clear();
 
-        for (const auto& [problem_name, problem] : problems) {
-            if (problem.solved && !problem.is_frozen) {
+        for (const auto& problem_name : problem_names) {
+            const auto& problem = problems[problem_name];
+            if (problem.solved && (include_frozen || !problem.is_frozen)) {
                 solved_count++;
                 total_penalty += problem.get_penalty();
                 solve_times.push_back(problem.first_solve_time);
@@ -87,9 +90,10 @@ private:
     int duration_time = 0;
     int problem_count = 0;
     vector<string> problem_names;
-    map<string, Team> teams;
+    unordered_map<string, Team> teams;
     vector<Submission> submissions;
     vector<Team*> ranking;
+    bool ranking_dirty = true;
 
 public:
     void add_team(const string& team_name) {
@@ -149,7 +153,8 @@ public:
                 problem.solved = true;
                 problem.first_solve_time = time;
                 if (!frozen) {
-                    team.update_stats();
+                    team.update_stats(problem_names);
+                    ranking_dirty = true;
                 }
             }
         } else {
@@ -159,7 +164,8 @@ public:
             } else {
                 problem.wrong_attempts++;
                 if (!frozen) {
-                    team.update_stats();
+                    team.update_stats(problem_names);
+                    ranking_dirty = true;
                 }
             }
         }
@@ -193,8 +199,6 @@ public:
         output_scoreboard();
 
         // Perform scrolling
-        vector<pair<string, string>> ranking_changes;
-
         while (true) {
             // Find the lowest ranked team with frozen problems
             Team* target_team = nullptr;
@@ -222,12 +226,12 @@ public:
             problem.frozen_wrong_attempts = 0;
 
             // Update team stats
-            target_team->update_stats();
+            target_team->update_stats(problem_names);
 
             // Update ranking
             update_ranking();
 
-            // Check if ranking changed
+            // Find the team that was replaced
             int new_rank = -1;
             for (size_t i = 0; i < ranking.size(); i++) {
                 if (ranking[i] == target_team) {
@@ -236,12 +240,9 @@ public:
                 }
             }
 
-            // Find the team that was replaced
+            // Output the ranking change if ranking improved
             if (new_rank > 1) {
                 Team* replaced_team = ranking[new_rank - 2];
-                ranking_changes.push_back({target_team->name, replaced_team->name});
-
-                // Output the ranking change
                 cout << target_team->name << " " << replaced_team->name << " "
                      << target_team->solved_count << " " << target_team->total_penalty << "\n";
             }
@@ -312,6 +313,8 @@ public:
 
 private:
     void update_ranking() {
+        if (!ranking_dirty && !frozen) return;
+
         ranking.clear();
         for (auto& [name, team] : teams) {
             ranking.push_back(&team);
@@ -320,6 +323,8 @@ private:
         sort(ranking.begin(), ranking.end(), [](Team* a, Team* b) {
             return *a < *b;
         });
+
+        ranking_dirty = false;
     }
 
     void output_scoreboard() {
