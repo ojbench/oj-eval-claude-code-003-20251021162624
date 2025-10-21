@@ -7,7 +7,6 @@
 #include <sstream>
 #include <unordered_map>
 #include <functional>
-#include <memory>
 
 using namespace std;
 
@@ -48,16 +47,15 @@ struct Team {
     int total_penalty = 0;
     vector<int> solve_times;
     unordered_map<string, TeamProblem> problems;
-    int rank = 0;
 
-    void update_stats(const vector<string>& problem_names, bool include_frozen = false) {
+    void update_stats(const vector<string>& problem_names) {
         solved_count = 0;
         total_penalty = 0;
         solve_times.clear();
 
         for (const auto& problem_name : problem_names) {
             const auto& problem = problems[problem_name];
-            if (problem.solved && (include_frozen || !problem.is_frozen)) {
+            if (problem.solved && !problem.is_frozen) {
                 solved_count++;
                 total_penalty += problem.get_penalty();
                 solve_times.push_back(problem.first_solve_time);
@@ -350,10 +348,10 @@ private:
                         cout << "+" << problem.wrong_attempts;
                     }
                 } else {
-                    if (problem.wrong_attempts == 0) {
+                    if (problem.wrong_attempts == 0 && problem.frozen_wrong_attempts == 0) {
                         cout << ".";
                     } else {
-                        cout << "-" << problem.wrong_attempts;
+                        cout << "-" << problem.get_total_wrong_attempts();
                     }
                 }
             }
